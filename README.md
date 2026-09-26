@@ -34,7 +34,8 @@ ledgify.py           Ledgify agent + compute_commission()
 synapto.py           Synapto agent
 fixtures.py          Mock data used by the demo and tests
 demo.py              End-to-end run on mock data, no credentials needed
-live_demo.py         Gatekeeper against a real Salesforce org
+live_demo.py         Gatekeeper against a real Salesforce org, one opportunity at a time
+watch_salesforce.py  Watches a real Salesforce org and runs Gatekeeper on every new Closed Won deal
 test_*.py            Test suite
 ```
 
@@ -43,10 +44,10 @@ test_*.py            Test suite
 ```
 pip install -r requirements.txt -r requirements-dev.txt
 python3 demo.py          # full walkthrough on mock data
-python3 -m pytest -v     # 44 tests
+python3 -m pytest -v     # 51 tests
 ```
 
-The tests cover commission edge cases (accelerators, bad splits, missing tiers), quote validation (including blank fields from a live system), duplicate-event handling, approval checks, and the live connector's not-found behaviour using a fake client.
+The tests cover commission edge cases (accelerators, bad splits, missing tiers), quote validation (including blank fields from a live system), duplicate-event handling, approval checks, and the live connector and the Salesforce watcher (using a fake Salesforce client, so no credentials are needed).
 
 ## Running against a real Salesforce org (optional)
 
@@ -61,6 +62,7 @@ The tests cover commission edge cases (accelerators, bad splits, missing tiers),
    - `Term_Months__c` (Number)
    - `Required_Skills__c` (Multi-Select Picklist, e.g. `SASE_CERT`)
    - `Tagged_Expert__c` (Text): written by Synapto
+   - `Gatekeeper_Status__c` (Text, 255): written by the watcher so you can see Gatekeeper's decision on the record
 
    **On Opportunity Product (OpportunityLineItem)**
    - `Product_SKU__c` (Text)
@@ -78,6 +80,26 @@ The tests cover commission edge cases (accelerators, bad splits, missing tiers),
    ```
 5. Create a Closed Won Opportunity with those fields filled in, then run `python3 live_demo.py` and paste its Id.
 
+### Watch it react live
+
+`watch_salesforce.py` checks your org every 5 seconds for deals that have just been marked **Closed Won** and runs Gatekeeper on each one automatically. The decision is printed in the terminal and written to the Opportunity's `Gatekeeper_Status__c` field.
+
+```
+python3 watch_salesforce.py
+```
+
+Then, in Salesforce, move an Opportunity to **Closed Won** and refresh the record a few seconds later:
+
+| Set on the Opportunity | Gatekeeper's decision |
+|---|---|
+| `TAM_Id__c` = `TAM-42`, valid SKU (e.g. `SASE-2200`) and dates | **STAGED**: billing schedule drafted, waiting for Deal Desk approval |
+| `TAM_Id__c` = `TAM-07` | **ESCALATED**: no delivery capacity, owned by Delivery Ops with a 4h SLA |
+| SKU like `oops`, or end date before start date | **BLOCKED**, with the exact validation errors |
+
+Fix a blocked deal's fields and it's re-evaluated on the next check. Gatekeeper's own status write doesn't re-trigger it. Delivery capacity is simulated (`DEMO_CAPACITY` in `watch_salesforce.py`), since Workday isn't connected.
+
+**Running it in GitHub Codespaces:** instead of a `.env` file, you can add `SF_USERNAME`, `SF_PASSWORD` and `SF_SECURITY_TOKEN` under the repo's **Settings → Secrets and variables → Codespaces**. They're then available automatically in every codespace.
+
 NetSuite and Workday stay mocked because neither offers free developer access.
 
 **Status:** the live connector is tested against a fake client but hasn't yet been run end-to-end against a real org.
@@ -86,7 +108,7 @@ NetSuite and Workday stay mocked because neither offers free developer access.
 
 - **In-memory state.** Approval and escalation queues are gone when the process exits. Production would need a database and a real notification channel (Slack/email).
 - **No authorization on approvals.** Each staged item records an `approver_role`, but nothing yet checks that the caller holds it.
-- **Events are called manually.** In production these would be wired to Salesforce Platform Events / Change Data Capture, NetSuite scripts or webhooks, and Workday business-process notifications.
+- **Events are polled or called manually.** The Salesforce watcher polls every few seconds, which is simple and free but not instant. In production these would be pushed via Salesforce Platform Events / Change Data Capture, NetSuite scripts or webhooks, and Workday business-process notifications.
 - **Placeholder schema.** Field names and the SKU format (`QUOTE_FIELD_RULES`) are illustrative and would need to match a real org's schema.
 - **Commission tiers are whole-deal, not marginal.** Crossing a threshold applies the higher rate to the entire deal amount. Many real plans apply it only to the portion above the threshold.
 - **`Tagged_Expert__c` holds one value**, so in the live connector a newly tagged expert replaces the previous one. The mock keeps a list.

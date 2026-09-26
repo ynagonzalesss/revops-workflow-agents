@@ -151,3 +151,37 @@ class LiveSalesforceConnector:
                 f"Commission_Plan__c record for Opportunity {opportunity_id} is missing or has malformed JSON "
                 f"fields: {error}"
             ) from error
+
+    # --- Used by watch_salesforce.py -------------------------------------------------
+
+    WATCHED_FIELDS = ("StageName", "SKU__c", "Subscription_Start__c", "Subscription_End__c",
+                      "TAM_Id__c", "Term_Months__c")
+
+    def get_closed_won_modified_since(self, since_utc):
+        """Closed Won opportunities modified at or after `since_utc` (a timezone-aware datetime)."""
+        since = since_utc.strftime("%Y-%m-%dT%H:%M:%SZ")  # SOQL datetime literals are unquoted
+        query = (
+            f"SELECT Id, Name, SystemModstamp, {', '.join(self.WATCHED_FIELDS)} FROM Opportunity "
+            f"WHERE StageName = 'Closed Won' AND SystemModstamp >= {since} "
+            "ORDER BY SystemModstamp ASC"
+        )
+        result = self._run_query(query, context="recently closed-won opportunities")
+        return [
+            {
+                "id": r["Id"],
+                "name": r.get("Name"),
+                "modified_at": r["SystemModstamp"],
+                "fingerprint": tuple(r.get(f) for f in self.WATCHED_FIELDS),
+            }
+            for r in result["records"]
+        ]
+
+    def set_gatekeeper_status(self, opportunity_id, status_text):
+        try:
+            self.client.Opportunity.update(opportunity_id, {"Gatekeeper_Status__c": status_text[:255]})
+        except SalesforceError as error:
+            raise SalesforceConnectorError(
+                f"Could not write Gatekeeper_Status__c on Opportunity {opportunity_id}: {error}"
+            ) from error
+        except requests.exceptions.RequestException as error:
+            raise SalesforceConnectorError(f"Network error writing status to {opportunity_id}: {error}") from error
